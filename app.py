@@ -17,13 +17,13 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+from huggingface_hub import hf_hub_download
 
 warnings.filterwarnings("ignore")
 
-# ── Model paths (downloaded from HF Hub via download_models()) ────────────────
-MODEL_DIR   = Path("models")
-EFFNET_CKPT = MODEL_DIR / "best_effnet_v4.pth"
-YOLO_CKPT   = MODEL_DIR / "best.pt"
+# ── Model paths (downloaded from HF Hub) ─────────────────────────────────────
+EFFNET_CKPT = Path(hf_hub_download(repo_id="Evangregor/bone-fracture-models", filename="best_effnet_v4.pth"))
+YOLO_CKPT   = Path(hf_hub_download(repo_id="Evangregor/bone-fracture-models", filename="best.pt"))
 
 ENSEMBLE_CONFIG = {
     "effnet_threshold" : 0.6623,
