@@ -130,9 +130,6 @@ ENSEMBLE_CONFIG = {
 
 ---
 
-## 📜 License
-
-MIT License — see [LICENSE](LICENSE).
 
 ## ✍️ Author
 
