@@ -1,0 +1,41 @@
+# Model weights (large files — upload to HF Hub separately)
+models/*.pth
+models/*.pt
+models/*.onnx
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Data
+data/
+datasets/
+*.zip
+*.tar.gz
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp
+/tmp/
+*.tmp
+
+# Credentials / secrets
+.env
+*.key
+kaggle.json
