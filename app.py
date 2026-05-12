@@ -1,6 +1,7 @@
 """
 Bone Fracture Classification - Hugging Face Space
 Ensemble of EfficientNet (classifier) + YOLOv8 (detector)
+Redesigned UI: clinical dark-mode dashboard aesthetic
 """
 
 import os, cv2, warnings, tempfile
@@ -21,7 +22,7 @@ from huggingface_hub import hf_hub_download
 
 warnings.filterwarnings("ignore")
 
-# ── Model paths (downloaded from HF Hub) ─────────────────────────────────────
+# ── Model paths ───────────────────────────────────────────────────────────────
 EFFNET_CKPT = Path(hf_hub_download(repo_id="Evangregor/bone-fracture-models", filename="best_effnet_v4.pth"))
 YOLO_CKPT   = Path(hf_hub_download(repo_id="Evangregor/bone-fracture-models", filename="best.pt"))
 
@@ -43,6 +44,20 @@ IMAGENET_STD  = [0.229, 0.224, 0.225]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {device}")
+
+# ── Plot style ────────────────────────────────────────────────────────────────
+plt.rcParams.update({
+    "figure.facecolor"  : "#0D1117",
+    "axes.facecolor"    : "#0D1117",
+    "axes.edgecolor"    : "#30363D",
+    "axes.labelcolor"   : "#8B949E",
+    "xtick.color"       : "#8B949E",
+    "ytick.color"       : "#8B949E",
+    "text.color"        : "#E6EDF3",
+    "grid.color"        : "#21262D",
+    "grid.linewidth"    : 0.5,
+    "font.family"       : "monospace",
+})
 
 # ── Preprocessing ─────────────────────────────────────────────────────────────
 infer_transform = transforms.Compose([
@@ -75,13 +90,13 @@ def load_effnet(ckpt_path):
     )
     m.load_state_dict(ckpt["model_state"])
     m = m.to(device).eval()
-    print(f"✅ EfficientNet loaded | AUC {ckpt['val_auc']:.4f}")
+    print(f"EfficientNet loaded | AUC {ckpt['val_auc']:.4f}")
     return m
 
 print("Loading models…")
 effnet_model = load_effnet(EFFNET_CKPT)
 yolo_model   = YOLO(str(YOLO_CKPT))
-print("✅ YOLOv8 loaded")
+print("YOLOv8 loaded")
 
 # ── Grad-CAM ──────────────────────────────────────────────────────────────────
 class GradCAM:
@@ -154,15 +169,25 @@ def ensemble_decision(effnet_score, yolo_score):
     return score, fracture, uncertain, models_agree
 
 def fig_to_array(fig):
-    fig.canvas.draw()
-    w, h = fig.canvas.get_width_height()
-    buf  = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-    return buf.reshape(h, w, 3)
+    import io
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', bbox_inches='tight', dpi=120, facecolor=fig.get_facecolor())
+    buf.seek(0)
+    img = Image.open(buf).convert('RGB')
+    return np.array(img)
+
+def styled_title(ax, title, subtitle=None, color="#58A6FF"):
+    ax.set_title(title, fontsize=11, color=color, fontweight="bold",
+                 loc="left", pad=10, fontfamily="monospace")
+    if subtitle:
+        ax.text(0.0, 1.01, subtitle, transform=ax.transAxes,
+                fontsize=8, color="#8B949E", va="bottom", ha="left",
+                fontfamily="monospace")
 
 # ── Main prediction function ──────────────────────────────────────────────────
 def predict_xray(image):
     if image is None:
-        return None, None, None, None, "⚠️ Please upload an X-ray image."
+        return None, None, None, None, "⚠  Upload an X-ray image to begin analysis."
 
     pil_orig  = Image.fromarray(image).convert("L")
     pil_clahe = apply_clahe(pil_orig)
@@ -174,134 +199,422 @@ def predict_xray(image):
     effnet_score              = run_effnet(pil_clahe)
     yolo_score, dets          = run_yolo(tmp_path)
     score, fracture, uncertain, agree = ensemble_decision(effnet_score, yolo_score)
+    n_det = len(dets)
 
-    # Panel 1 – CLAHE
-    clahe_np  = np.array(pil_clahe.resize((512, 512)))
-    fig1, ax1 = plt.subplots(figsize=(5, 5))
-    ax1.imshow(clahe_np, cmap="gray")
-    ax1.set_title("CLAHE Enhanced X-ray", fontsize=12, fontweight="bold")
+    # ── Verdict colours ───────────────────────────────────────────────────────
+    if uncertain:
+        verdict_label = "UNCERTAIN"
+        verdict_sub   = "Radiologist review required"
+        accent        = "#E3B341"   # amber
+        icon          = "⚠"
+    elif fracture:
+        verdict_label = "FRACTURE DETECTED"
+        verdict_sub   = "Abnormal — seek clinical evaluation"
+        accent        = "#F85149"   # red
+        icon          = "✕"
+    else:
+        verdict_label = "NO FRACTURE"
+        verdict_sub   = "Normal — no abnormality detected"
+        accent        = "#3FB950"   # green
+        icon          = "✓"
+
+    BG   = "#0D1117"
+    SURF = "#161B22"
+    GRID = "#21262D"
+    DIM  = "#8B949E"
+    HI   = "#E6EDF3"
+
+    # ── Panel 1: CLAHE ────────────────────────────────────────────────────────
+    clahe_np  = np.array(pil_clahe.resize((480, 480)))
+    fig1, ax1 = plt.subplots(figsize=(5, 5.4))
+    fig1.patch.set_facecolor(BG)
+    ax1.set_facecolor(BG)
+    ax1.imshow(clahe_np, cmap="bone")
+    styled_title(ax1, "CLAHE Enhancement", "Contrast-limited adaptive histogram equalization")
     ax1.axis("off")
-    plt.tight_layout()
+    for spine in ax1.spines.values():
+        spine.set_edgecolor(GRID)
+    plt.tight_layout(pad=0.8)
     panel1 = fig_to_array(fig1);  plt.close(fig1)
 
-    # Panel 2 – Grad-CAM
+    # ── Panel 2: Grad-CAM ─────────────────────────────────────────────────────
     target_layer = get_target_layer(effnet_model)
     gc           = GradCAM(effnet_model, target_layer)
     input_tensor = infer_transform(pil_clahe).unsqueeze(0).to(device)
     cam, _       = gc.generate(input_tensor)
-    sz           = (512, 512)
+    sz           = (480, 480)
     cam_resized  = cv2.resize(cam, sz)
-    heatmap      = cv2.applyColorMap(np.uint8(255 * cam_resized), cv2.COLORMAP_JET)
+    heatmap      = cv2.applyColorMap(np.uint8(255 * cam_resized), cv2.COLORMAP_INFERNO)
     orig_np      = np.array(pil_clahe.resize(sz))
     orig_bgr     = cv2.cvtColor(orig_np, cv2.COLOR_GRAY2BGR)
-    overlay      = cv2.addWeighted(orig_bgr, 0.55, heatmap, 0.45, 0)
-    fig2, axes2  = plt.subplots(1, 2, figsize=(10, 5))
-    axes2[0].imshow(cam_resized, cmap="jet");  axes2[0].set_title("Grad-CAM Heatmap", fontsize=11, fontweight="bold"); axes2[0].axis("off")
-    axes2[1].imshow(overlay[..., ::-1]);       axes2[1].set_title(f"Overlay | EfficientNet: {effnet_score:.3f}", fontsize=11); axes2[1].axis("off")
-    plt.tight_layout()
+    overlay      = cv2.addWeighted(orig_bgr, 0.5, heatmap, 0.5, 0)
+
+    fig2, axes2  = plt.subplots(1, 2, figsize=(10, 5.4))
+    fig2.patch.set_facecolor(BG)
+    for ax in axes2:
+        ax.set_facecolor(BG)
+        ax.axis("off")
+
+    axes2[0].imshow(cam_resized, cmap="inferno")
+    styled_title(axes2[0], "Grad-CAM Heatmap", f"EfficientNet attention  ·  score {effnet_score:.3f}")
+
+    axes2[1].imshow(overlay[..., ::-1])
+    styled_title(axes2[1], "Overlay", "Heatmap blended onto CLAHE image")
+
+    # Thin colourbar
+    sm = plt.cm.ScalarMappable(cmap="inferno", norm=plt.Normalize(0, 1))
+    sm.set_array([])
+    cb = fig2.colorbar(sm, ax=axes2[0], fraction=0.035, pad=0.02)
+    cb.ax.tick_params(labelsize=7, colors=DIM)
+    cb.outline.set_edgecolor(GRID)
+
+    plt.tight_layout(pad=0.8)
     panel2 = fig_to_array(fig2);  plt.close(fig2)
 
-    # Panel 3 – YOLO detections
+    # ── Panel 3: YOLO detections ──────────────────────────────────────────────
     orig_for_yolo = np.array(Image.open(tmp_path).convert("RGB"))
-    fig3, ax3     = plt.subplots(figsize=(5, 5))
+    fig3, ax3     = plt.subplots(figsize=(5, 5.4))
+    fig3.patch.set_facecolor(BG)
+    ax3.set_facecolor(BG)
     ax3.imshow(orig_for_yolo)
     for det in dets:
         x1, y1, x2, y2 = det["bbox"]
-        rect = patches.Rectangle((x1, y1), x2-x1, y2-y1,
-                                  linewidth=3, edgecolor="red", facecolor="none")
+        rect = patches.FancyBboxPatch(
+            (x1, y1), x2-x1, y2-y1,
+            boxstyle="square,pad=0",
+            linewidth=2, edgecolor="#F85149", facecolor=(0.97, 0.32, 0.29, 0.08)
+        )
         ax3.add_patch(rect)
-        ax3.text(x1, max(y1-10, 0), f"fractured {det['confidence']:.2f}",
-                 color="white", fontsize=10, fontweight="bold",
-                 bbox=dict(facecolor="red", alpha=0.8, edgecolor="none", pad=2))
-    n_det = len(dets)
-    ax3.set_title(f"YOLO: {n_det} region(s) | Score: {yolo_score:.3f}",
-                  fontsize=11, fontweight="bold",
-                  color="red" if n_det > 0 else "green")
-    ax3.axis("off");  plt.tight_layout()
+        ax3.text(x1 + 4, y1 + 18, f"{det['confidence']:.2f}",
+                 color="#F85149", fontsize=9, fontweight="bold",
+                 fontfamily="monospace",
+                 bbox=dict(facecolor=BG, alpha=0.75, edgecolor="none", pad=2))
+
+    det_color = "#F85149" if n_det > 0 else "#3FB950"
+    styled_title(ax3, "YOLOv8 Detections",
+                 f"{n_det} region(s) localised  ·  max conf {yolo_score:.3f}", color=det_color)
+    ax3.axis("off")
+    plt.tight_layout(pad=0.8)
     panel3 = fig_to_array(fig3);  plt.close(fig3)
 
-    # Panel 4 – Ensemble result
-    if uncertain:
-        verdict, verdict_sub, bar_color = "⚠️  UNCERTAIN", "Radiologist review required", "#FFA500"
-    elif fracture:
-        verdict, verdict_sub, bar_color = "🔴  FRACTURE DETECTED", "Abnormal X-ray", "#FF4444"
-    else:
-        verdict, verdict_sub, bar_color = "🟢  NORMAL", "No fracture detected", "#44BB44"
+    # ── Panel 4: Ensemble summary ──────────────────────────────────────────────
+    fig4 = plt.figure(figsize=(6, 5.4))
+    fig4.patch.set_facecolor(BG)
 
-    fig4, ax4 = plt.subplots(figsize=(6, 5))
-    ax4.axis("off")
-    metrics = [
-        ("EfficientNet", effnet_score, "#4488FF"),
-        ("YOLO",         yolo_score,   "#FF8844"),
-        ("Ensemble",     score,        bar_color),
+    # Big verdict block at top
+    ax_top = fig4.add_axes([0.0, 0.72, 1.0, 0.28])
+    ax_top.set_facecolor(SURF)
+    ax_top.axis("off")
+    ax_top.add_patch(patches.FancyBboxPatch(
+        (0.01, 0.04), 0.98, 0.92,
+        boxstyle="square,pad=0",
+        facecolor=SURF, edgecolor=accent, linewidth=1.5,
+        transform=ax_top.transAxes, clip_on=False
+    ))
+    ax_top.text(0.5, 0.72, f"{icon}  {verdict_label}", ha="center", va="center",
+                fontsize=18, fontweight="bold", color=accent,
+                transform=ax_top.transAxes, fontfamily="monospace")
+    ax_top.text(0.5, 0.28, verdict_sub, ha="center", va="center",
+                fontsize=9, color=DIM, transform=ax_top.transAxes,
+                fontfamily="monospace")
+
+    # Score bars
+    ax_bar = fig4.add_axes([0.08, 0.10, 0.84, 0.58])
+    ax_bar.set_facecolor(BG)
+    ax_bar.set_xlim(0, 1)
+    ax_bar.set_ylim(-0.2, 3.2)
+    ax_bar.axis("off")
+
+    models = [
+        ("ENSEMBLE",     score,        accent,   ENSEMBLE_CONFIG["final_threshold"]),
+        ("YOLOv8",       yolo_score,   "#79C0FF", ENSEMBLE_CONFIG["yolo_conf"]),
+        ("EfficientNet", effnet_score, "#56D364", ENSEMBLE_CONFIG["effnet_threshold"]),
     ]
-    for (label, val, color), y in zip(metrics, [0.75, 0.55, 0.30]):
-        ax4.barh(y, val, height=0.12, color=color, alpha=0.85)
-        ax4.text(-0.02, y, label, ha="right", va="center", fontsize=11)
-        ax4.text(val + 0.02, y, f"{val:.3f}", ha="left", va="center", fontsize=11, fontweight="bold")
-    ax4.set_xlim(-0.3, 1.2);  ax4.set_ylim(0.1, 1.0)
-    ax4.axvline(x=ENSEMBLE_CONFIG["final_threshold"], color="gray", linestyle="--", alpha=0.5, linewidth=1.5)
-    ax4.text(ENSEMBLE_CONFIG["final_threshold"], 0.15,
-             f"threshold={ENSEMBLE_CONFIG['final_threshold']}", ha="center", fontsize=8, color="gray")
-    ax4.text(0.5, 0.95, verdict, ha="center", va="top",
-             fontsize=16, fontweight="bold", color=bar_color, transform=ax4.transAxes)
-    ax4.text(0.5, 0.84, verdict_sub, ha="center", va="top",
-             fontsize=11, color="gray", transform=ax4.transAxes)
-    ax4.text(0.5, 0.07, f"Models {'agree ✓' if agree else 'disagree ✗'}",
-             ha="center", fontsize=10, color="green" if agree else "orange", transform=ax4.transAxes)
-    plt.tight_layout()
+
+    for i, (label, val, clr, thresh) in enumerate(models):
+        y = i * 0.95 + 0.2
+        bar_h = 0.34
+        # Track
+        ax_bar.add_patch(patches.FancyBboxPatch(
+            (0, y), 1.0, bar_h,
+            boxstyle="square,pad=0",
+            facecolor=GRID, edgecolor="none"
+        ))
+        # Fill
+        ax_bar.add_patch(patches.FancyBboxPatch(
+            (0, y), val, bar_h,
+            boxstyle="square,pad=0",
+            facecolor=clr, edgecolor="none", alpha=0.85
+        ))
+        # Threshold tick
+        ax_bar.axvline(x=thresh, ymin=(y) / 3.2, ymax=(y + bar_h) / 3.2,
+                       color="#30363D", linewidth=1.5, linestyle="--")
+        # Labels
+        ax_bar.text(-0.02, y + bar_h / 2, label,
+                    ha="right", va="center", fontsize=9, color=HI,
+                    fontfamily="monospace", fontweight="bold")
+        ax_bar.text(val + 0.02 if val < 0.88 else val - 0.04,
+                    y + bar_h / 2, f"{val:.3f}",
+                    ha="left" if val < 0.88 else "right",
+                    va="center", fontsize=9, color=clr,
+                    fontfamily="monospace", fontweight="bold")
+        ax_bar.text(thresh, y - 0.08, f"τ={thresh}", ha="center",
+                    fontsize=6.5, color=DIM, fontfamily="monospace")
+
+    # Agreement badge
+    agree_txt = "models agree" if agree else "models disagree"
+    agree_clr = "#3FB950" if agree else "#E3B341"
+    ax_bar.text(0.5, -0.15, f"{'✓' if agree else '⚠'}  {agree_txt}",
+                ha="center", va="center", fontsize=9,
+                color=agree_clr, fontfamily="monospace",
+                transform=ax_bar.transAxes)
+
+    plt.tight_layout(pad=0)
     panel4 = fig_to_array(fig4);  plt.close(fig4)
 
-    # Text report
+    # ── Text report ───────────────────────────────────────────────────────────
+    agree_str = "agree" if agree else "disagree"
+    uncertain_str = "yes — radiologist review advised" if uncertain else "no"
     report = (
-        f"{'='*45}\n"
-        f"  BONE FRACTURE ANALYSIS REPORT\n"
-        f"{'='*45}\n"
-        f"  Verdict      : {verdict}\n"
-        f"  Ensemble Score : {score:.4f}  (threshold {ENSEMBLE_CONFIG['final_threshold']})\n"
-        f"\n  Model Scores:\n"
-        f"    EfficientNet : {effnet_score:.4f}  (threshold {ENSEMBLE_CONFIG['effnet_threshold']})\n"
-        f"    YOLOv8       : {yolo_score:.4f}  ({n_det} region(s) detected)\n"
-        f"\n  Agreement    : {'✅ Models agree' if agree else '⚠️  Models disagree'}\n"
-        f"  Uncertainty  : {'Yes — radiologist review advised' if uncertain else 'No'}\n"
-        f"{'='*45}\n"
-        f"  ⚠️  For research / educational use only.\n"
-        f"  Not a substitute for professional diagnosis.\n"
-        f"{'='*45}"
+        f"┌{'─'*43}┐\n"
+        f"│{'  BONE FRACTURE ANALYSIS REPORT':^43}│\n"
+        f"├{'─'*43}┤\n"
+        f"│  verdict        {verdict_label:<25}│\n"
+        f"│  ensemble score {score:.4f}  (τ = {ENSEMBLE_CONFIG['final_threshold']})     │\n"
+        f"├{'─'*43}┤\n"
+        f"│  EfficientNet   {effnet_score:.4f}  (τ = {ENSEMBLE_CONFIG['effnet_threshold']})    │\n"
+        f"│  YOLOv8         {yolo_score:.4f}  ({n_det} region(s))          │\n"
+        f"├{'─'*43}┤\n"
+        f"│  agreement      {agree_str:<25}│\n"
+        f"│  uncertain      {uncertain_str:<25}│\n"
+        f"├{'─'*43}┤\n"
+        f"│  ⚠  Research / educational use only.    │\n"
+        f"│     Not a substitute for diagnosis.     │\n"
+        f"└{'─'*43}┘"
     )
 
     os.unlink(tmp_path)
     return panel1, panel2, panel3, panel4, report
 
+
+# ── Custom CSS ────────────────────────────────────────────────────────────────
+CSS = """
+/* ── Global ─────────────────────────────────────── */
+:root {
+    --bg-primary   : #0D1117;
+    --bg-surface   : #161B22;
+    --bg-elevated  : #21262D;
+    --border-dim   : #30363D;
+    --text-primary : #E6EDF3;
+    --text-muted   : #8B949E;
+    --accent-blue  : #58A6FF;
+    --accent-green : #3FB950;
+    --accent-red   : #F85149;
+    --accent-amber : #E3B341;
+    --mono         : 'JetBrains Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+}
+body, .gradio-container {
+    background: var(--bg-primary) !important;
+    color: var(--text-primary) !important;
+    font-family: var(--mono) !important;
+}
+
+/* ── Header ──────────────────────────────────────── */
+.app-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 28px 0 20px;
+    border-bottom: 1px solid var(--border-dim);
+    margin-bottom: 24px;
+}
+.app-header .logo {
+    font-size: 36px;
+    line-height: 1;
+}
+.app-header .titles h1 {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: var(--text-primary);
+}
+.app-header .titles p {
+    margin: 4px 0 0;
+    font-size: 12px;
+    color: var(--text-muted);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+.badge {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 20px;
+    border: 1px solid;
+    margin-left: 6px;
+    vertical-align: middle;
+}
+.badge-blue  { color: var(--accent-blue);  border-color: var(--accent-blue);  }
+.badge-green { color: var(--accent-green); border-color: var(--accent-green); }
+
+/* ── Section labels ──────────────────────────────── */
+.section-label {
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin: 0 0 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border-dim);
+}
+
+/* ── Upload area ─────────────────────────────────── */
+.upload-area .wrap {
+    background  : var(--bg-surface) !important;
+    border      : 1px dashed var(--border-dim) !important;
+    border-radius: 8px !important;
+    min-height  : 300px;
+    transition  : border-color 0.2s;
+}
+.upload-area .wrap:hover {
+    border-color: var(--accent-blue) !important;
+}
+
+/* ── Analyse button ──────────────────────────────── */
+#analyse-btn {
+    width       : 100%;
+    margin-top  : 12px;
+    background  : var(--accent-blue) !important;
+    color       : #0D1117 !important;
+    border      : none !important;
+    border-radius: 6px !important;
+    font-size   : 13px !important;
+    font-weight : 700 !important;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    height      : 44px !important;
+    cursor      : pointer;
+    transition  : opacity 0.15s;
+}
+#analyse-btn:hover { opacity: 0.85; }
+
+/* ── Report textbox ──────────────────────────────── */
+#report-box textarea {
+    background  : var(--bg-surface) !important;
+    color       : var(--accent-green) !important;
+    font-family : var(--mono) !important;
+    font-size   : 12px !important;
+    line-height : 1.6 !important;
+    border      : 1px solid var(--border-dim) !important;
+    border-radius: 6px !important;
+    padding     : 14px !important;
+}
+#report-box label { color: var(--text-muted) !important; font-size: 10px !important; letter-spacing: 1px; text-transform: uppercase; }
+
+/* ── Image panels ────────────────────────────────── */
+.panel-img .wrap {
+    background  : var(--bg-surface) !important;
+    border      : 1px solid var(--border-dim) !important;
+    border-radius: 8px !important;
+    overflow    : hidden;
+}
+.panel-img label { color: var(--text-muted) !important; font-size: 10px !important; letter-spacing: 1px; text-transform: uppercase; }
+
+/* ── Examples ────────────────────────────────────── */
+.examples-holder table { background: var(--bg-surface) !important; border: 1px solid var(--border-dim) !important; border-radius: 6px !important; }
+.examples-holder td    { color: var(--text-muted) !important; font-size: 12px !important; }
+.examples-holder td:hover { color: var(--accent-blue) !important; cursor: pointer; }
+
+/* ── Disclaimer bar ──────────────────────────────── */
+.disclaimer {
+    margin-top  : 28px;
+    padding     : 10px 16px;
+    background  : rgba(232,179,65,0.08);
+    border-left : 3px solid var(--accent-amber);
+    border-radius: 0 6px 6px 0;
+    font-size   : 11px;
+    color       : var(--accent-amber);
+    letter-spacing: 0.3px;
+}
+
+/* ── Gradio chrome overrides ─────────────────────── */
+footer { display: none !important; }
+.gr-prose h1, .gr-prose h2, .gr-prose h3 { color: var(--text-primary) !important; }
+"""
+
+HEADER_HTML = """
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+<div class="app-header">
+    <div class="logo">🦴</div>
+    <div class="titles">
+        <h1>Bone Fracture Classifier
+            <span class="badge badge-blue">EfficientNet</span>
+            <span class="badge badge-green">YOLOv8</span>
+        </h1>
+        <p>Ensemble model with Grad-CAM explainability &nbsp;·&nbsp; Research use only</p>
+    </div>
+</div>
+"""
+
+DISCLAIMER_HTML = """
+<div class="disclaimer">
+    ⚠&nbsp; This tool is intended for <strong>research and educational purposes only</strong>.
+    Results must not be used as a substitute for professional clinical diagnosis.
+    Always consult a qualified radiologist or physician.
+</div>
+"""
+
+
 # ── Gradio UI ─────────────────────────────────────────────────────────────────
-with gr.Blocks(title="Bone Fracture Classifier", theme=gr.themes.Soft()) as demo:
-    gr.Markdown(
-        """
-        # 🦴 Bone Fracture Classifier
-        ### EfficientNet + YOLOv8 Ensemble with Grad-CAM Explainability
+with gr.Blocks(css=CSS, title="Bone Fracture Classifier") as demo:
 
-        Upload a bone X-ray and the model will classify it as **Fractured** or **Normal**,
-        localise fracture regions, and show a Grad-CAM heatmap for transparency.
+    gr.HTML(HEADER_HTML)
 
-        > ⚠️ **Disclaimer:** For research and educational use only. Not a substitute for clinical diagnosis.
-        """
+    with gr.Row(equal_height=False):
+        # ── Left column: input + report ───────────────────────────────────────
+        with gr.Column(scale=1, min_width=280):
+            gr.HTML('<p class="section-label">Input</p>')
+            img_input = gr.Image(
+                label="Upload X-ray",
+                type="numpy",
+                elem_classes=["upload-area"],
+                height=300,
+            )
+            run_btn = gr.Button(
+                "Analyse →",
+                variant="primary",
+                elem_id="analyse-btn",
+            )
+            gr.HTML('<p class="section-label" style="margin-top:20px">Report</p>')
+            report_box = gr.Textbox(
+                label="Analysis Output",
+                lines=15,
+                interactive=False,
+                elem_id="report-box",
+                placeholder="Run analysis to see results here…",
+            )
+
+        # ── Right column: 2×2 panel grid ─────────────────────────────────────
+        with gr.Column(scale=2):
+            gr.HTML('<p class="section-label">Visualisations</p>')
+            with gr.Row():
+                panel1_out = gr.Image(label="CLAHE Enhanced",     elem_classes=["panel-img"], show_download_button=False)
+                panel4_out = gr.Image(label="Ensemble Scores",    elem_classes=["panel-img"], show_download_button=False)
+            with gr.Row():
+                panel2_out = gr.Image(label="Grad-CAM Heatmap",  elem_classes=["panel-img"], show_download_button=False)
+                panel3_out = gr.Image(label="YOLOv8 Detections", elem_classes=["panel-img"], show_download_button=False)
+
+    gr.HTML('<p class="section-label" style="margin-top:24px">Examples</p>')
+    gr.Examples(
+        examples=[["examples/sample_fracture.jpg"], ["examples/sample_normal.jpg"]],
+        inputs=[img_input],
+        label="",
+        elem_classes=["examples-holder"],
     )
 
-    with gr.Row():
-        with gr.Column(scale=1):
-            img_input = gr.Image(label="Upload X-ray Image", type="numpy")
-            run_btn   = gr.Button("🔍 Analyse", variant="primary", size="lg")
-
-        with gr.Column(scale=2):
-            report_box = gr.Textbox(label="Analysis Report", lines=14, interactive=False)
-
-    with gr.Row():
-        panel1_out = gr.Image(label="CLAHE Enhanced")
-        panel2_out = gr.Image(label="Grad-CAM Heatmap")
-
-    with gr.Row():
-        panel3_out = gr.Image(label="YOLO Detections")
-        panel4_out = gr.Image(label="Ensemble Scores")
+    gr.HTML(DISCLAIMER_HTML)
 
     run_btn.click(
         fn=predict_xray,
@@ -309,11 +622,5 @@ with gr.Blocks(title="Bone Fracture Classifier", theme=gr.themes.Soft()) as demo
         outputs=[panel1_out, panel2_out, panel3_out, panel4_out, report_box],
     )
 
-    gr.Examples(
-        examples=[["examples/sample_fracture.jpg"], ["examples/sample_normal.jpg"]],
-        inputs=[img_input],
-        label="Sample Images",
-    )
-
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(server_name="0.0.0.0")
